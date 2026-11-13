@@ -21,14 +21,24 @@ $('quiz-app').addEventListener('click',e=>{const jumpButton=e.target.closest('[d
  if(id==='quiz-summary')report();
  if(id==='quiz-reset'&&confirm('重設本次20題作答與成績？診斷評估與追蹤紀錄會保留。')){choices.clear();graded.clear();filter='all';active=0;quiz();}
 });
+const branchNo=new Map(D.map.map((n,i)=>[n.id,i+1])),lower=s=>String(s).toLowerCase(),ownText=n=>lower([n.title,...n.points].join(' '));
 function countNodes(nodes){return nodes.reduce((s,n)=>s+1+countNodes(n.children),0);}
 function countPoints(nodes){return nodes.reduce((s,n)=>s+n.points.length+countPoints(n.children),0);}
-function selectNodes(nodes,text){if(!text)return nodes;return nodes.flatMap(n=>{if([n.title,...n.points].join(' ').toLocaleLowerCase().includes(text))return [n];const children=selectNodes(n.children,text);return children.length?[{...n,children}]:[];});}
-function renderNode(n,depth,index,searching){const root=depth===0;return `<${root?'article':'div'} class="${root?'map-branch':'map-child'}"><details data-map-node="${n.id}" ${root||searching?'open':''}><summary>${root?`<span class="map-number">${String(index+1).padStart(2,'0')}</span>`:''}<span>${esc(n.title)}</span></summary><div class="map-body"><ul>${n.points.map(p=>`<li>${esc(p)}</li>`).join('')}</ul>${n.children.map((c,i)=>renderNode(c,depth+1,i,searching)).join('')}${n.refs.length?`<p class="map-refs">${refs(n.refs)}</p>`:''}</div></details></${root?'article':'div'}>`;}
-function map(){const q=$('map-search').value.trim().toLocaleLowerCase(),nodes=selectNodes(D.map,q);$('clinical-map').innerHTML=nodes.length?nodes.map((n,i)=>renderNode(n,0,i,!!q)).join(''):'<div class="empty">找不到符合的節點。請換一個關鍵字，或清除搜尋。</div>';$('map-status').textContent=q?`搜尋「${$('map-search').value.trim()}」：顯示 ${nodes.length} 條主幹、${countNodes(nodes)} 個節點。`:`${D.map.length} 條主幹、${countNodes(D.map)} 個節點、${countPoints(D.map)} 個臨床重點；主幹預先展開，子節點可逐層探索。`;}
-$('map-search').addEventListener('input',map);
-$('map-expand').onclick=()=>{document.querySelectorAll('#clinical-map details').forEach(d=>d.open=true);$('map-status').textContent+=' 已展開所有顯示節點。';};
-$('map-collapse').onclick=()=>{document.querySelectorAll('#clinical-map details').forEach(d=>d.open=false);$('map-status').textContent='已收合所有顯示節點；點選主幹即可重新探索。';};
-$('map-clear').onclick=()=>{$('map-search').value='';map();$('map-search').focus();};
+function countHits(nodes){return nodes.reduce((s,n)=>s+(n.hit?1:0)+countHits(n.children),0);}
+const alias={'療效不足':'反應不足','治療無效':'反應不足','bzd':'benzodiazepine','ybocs':'y-bocs'};
+function termsOf(q){return [...new Set(lower(q).split(/[\s,，、]+/).filter(Boolean).map(t=>alias[t]||t))];}
+/* 多關鍵字為AND：每個詞須出現在節點本身或其上層主題；至少一詞落在節點本身。命中節點保留完整子樹，其他節點只留通往命中的路徑。 */
+function selectNodes(nodes,ts,ctx=''){return nodes.flatMap(n=>{const own=ownText(n),all=ctx+' '+own;if(ts.every(t=>all.includes(t))&&ts.some(t=>own.includes(t)))return [{...n,hit:true}];const children=selectNodes(n.children,ts,ctx+' '+lower(n.title));return children.length?[{...n,children,hit:false}]:[];});}
+function hl(s,ts){s=String(s);if(!ts.length)return esc(s);const low=s.toLowerCase();if(low.length!==s.length)return esc(s);const on=new Array(s.length).fill(false);for(const t of ts){let i=0;while((i=low.indexOf(t,i))>-1){on.fill(true,i,i+t.length);i+=t.length;}}let out='',m=false;for(let i=0;i<s.length;i++){if(on[i]!==m){out+=m?'</mark>':'<mark>';m=on[i];}out+=esc(s[i]);}return out+(m?'</mark>':'');}
+function renderNode(n,depth,ts){const root=depth===0,own=ownText(n),open=ts.length?(n.hit!==undefined||ts.some(t=>own.includes(t))):root;return `<${root?'article':'div'} class="${root?'map-branch':'map-child'}${n.hit?' map-hit':''}"><details data-map-node="${n.id}" ${open?'open':''}><summary>${root?`<span class="map-number">${String(branchNo.get(n.id)).padStart(2,'0')}</span>`:''}<span>${hl(n.title,ts)}</span>${n.children.length?`<small class="map-count" title="下層 ${countNodes(n.children)} 個節點" aria-label="下層 ${countNodes(n.children)} 個節點">${countNodes(n.children)}</small>`:''}</summary><div class="map-body"><ul>${n.points.map(p=>`<li>${hl(p,ts)}</li>`).join('')}</ul>${n.children.map(c=>renderNode(c,depth+1,ts)).join('')}${n.refs.length?`<p class="map-refs">${refs(n.refs)}</p>`:''}</div></details></${root?'article':'div'}>`;}
+const defaultStatus=()=>`${D.map.length} 條主幹、${countNodes(D.map)} 個節點、${countPoints(D.map)} 個臨床重點；主幹預先展開，子節點可逐層探索。`;
+function map(){const raw=$('map-search').value.trim(),ts=termsOf(raw),nodes=ts.length?selectNodes(D.map,ts):D.map;$('clinical-map').innerHTML=nodes.length?nodes.map(n=>renderNode(n,0,ts)).join(''):`<div class="empty">找不到同時符合「${esc(raw)}」的節點。可減少關鍵字、改用同義詞（如「劑量」「追蹤」），或清除搜尋。</div>`;$('map-status').textContent=ts.length?(nodes.length?`搜尋「${raw}」：${countHits(nodes)} 個節點符合，分布於 ${nodes.length} 條主幹；已展開命中路徑，符合文字以底色標示。`:`搜尋「${raw}」：沒有符合節點。`):defaultStatus();$('map-clear').disabled=!raw;document.querySelectorAll('[data-map-q]').forEach(b=>b.setAttribute('aria-pressed',String(lower(b.dataset.mapQ)===lower(raw))));}
+let mapTimer;$('map-search').addEventListener('input',()=>{clearTimeout(mapTimer);mapTimer=setTimeout(map,120);});
+$('map-search').addEventListener('keydown',e=>{if(e.key==='Escape'&&e.target.value){e.preventDefault();e.target.value='';map();}if(e.key==='Enter'){e.preventDefault();clearTimeout(mapTimer);map();}});
+$('map-topics').addEventListener('click',e=>{const b=e.target.closest('[data-map-q]');if(!b)return;const same=b.getAttribute('aria-pressed')==='true';$('map-search').value=same?'':b.dataset.mapQ;clearTimeout(mapTimer);map();});
+const visibleDetails=()=>[...document.querySelectorAll('#clinical-map details')];
+$('map-expand').onclick=()=>{const d=visibleDetails();d.forEach(x=>x.open=true);$('map-status').textContent=`已展開目前顯示的 ${d.length} 個節點。`;};
+$('map-collapse').onclick=()=>{visibleDetails().forEach(x=>x.open=false);$('map-status').textContent='已收合所有顯示節點；點選主幹即可重新探索。';};
+$('map-clear').onclick=()=>{clearTimeout(mapTimer);$('map-search').value='';map();$('map-search').focus();};
 quiz();map();
 })();
